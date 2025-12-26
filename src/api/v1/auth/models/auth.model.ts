@@ -1,39 +1,87 @@
-import {
-    pgTable,
-    uuid,
-    text,
-    varchar,
-    timestamp,
-    boolean
-} from "drizzle-orm/pg-core";
+import mongoose, { Schema, Document } from "mongoose";
 import { AuthStatus, UserRole } from "./auth.entity";
 
-export const authUsers = pgTable("auth_users", {
-    id: uuid("id")
-        .defaultRandom()
-        .primaryKey(),
+export interface IAuthUser extends Document {
+    username: string;
+    email: string;
+    password: string;
+    role: UserRole;
+    status: AuthStatus;
+    isVerified: boolean;
+    refreshToken?: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+}
 
-    username: varchar("username", { length: 100 }).notNull(),
-    email: varchar("email", { length: 255 }).notNull(),
-    password: text("password").notNull(),
+const AuthUserSchema = new Schema<IAuthUser>(
+    {
+        username: {
+            type: String,
+            required: true,
+            trim: true,
+            maxlength: 100,
+        },
 
-    role: text("role")
-        .$type<UserRole>()
-        .default(UserRole.USER)
-        .notNull(),
+        email: {
+            type: String,
+            required: true,
+            trim: true,
+            lowercase: true,
+            maxlength: 255,
+        },
 
-    status: text("status")
-        .$type<AuthStatus>()
-        .default(AuthStatus.ACTIVE)
-        .notNull(),
+        password: {
+            type: String,
+            required: true,
+        },
 
-    isVerified: boolean("is_verified")
-        .default(false)
-        .notNull(),
+        role: {
+            type: String,
+            enum: Object.values(UserRole),
+            default: UserRole.USER,
+            required: true,
+        },
 
-    refreshToken: text("refresh_token"),
+        status: {
+            type: String,
+            enum: Object.values(AuthStatus),
+            default: AuthStatus.ACTIVE,
+            required: true,
+        },
 
-    /** ----- TIMESTAMPS ----- */
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+        isVerified: {
+            type: Boolean,
+            default: false,
+            required: true,
+        },
+
+        refreshToken: {
+            type: String,
+            default: null,
+        },
+    },
+    {
+        timestamps: true,     // createdAt & updatedAt
+        versionKey: false,    // removes __v
+    }
+);
+
+//
+// ---------------- INDEXES ----------------
+//
+
+// Uniqueness (critical for auth)
+AuthUserSchema.index({ email: 1 }, { unique: true });
+AuthUserSchema.index({ username: 1 }, { unique: true });
+
+// Common lookups
+AuthUserSchema.index({ role: 1 });
+AuthUserSchema.index({ status: 1 });
+AuthUserSchema.index({ isVerified: 1 });
+
+// Sorting
+AuthUserSchema.index({ createdAt: -1 });
+
+const AuthUser = mongoose.model<IAuthUser>("AuthUser", AuthUserSchema);
+
+export default AuthUser;

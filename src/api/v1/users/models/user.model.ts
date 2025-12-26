@@ -1,53 +1,87 @@
-import {
-    pgTable,
-    serial,
-    text,
-    varchar,
-    boolean,
-    timestamp,
-    jsonb,
-    uuid,
-
-} from "drizzle-orm/pg-core";
-
+import mongoose, { Schema, Document } from "mongoose";
 import { ISocialLinks, IUserPreferences } from "./user.entity";
 
-export const users = pgTable("users", {
-    id: uuid("id")
-        .defaultRandom()
-        .primaryKey(),
+export interface IUser extends Document {
+    fullName: string;
+    avatar: string | null;
+    bio: string;
+    socialLinks: ISocialLinks;
+    followers: string[];
+    following: string[];
+    preferences: IUserPreferences;
+    createdAt: Date;
+    updatedAt: Date;
+}
 
-    fullName: text("full_name").notNull(),
-    avatar: text("avatar"),
-    bio: varchar("bio", { length: 500 }).default(""),
+const UserSchema = new Schema<IUser>(
+    {
+        fullName: {
+            type: String,
+            required: true,
+            trim: true,
+        },
 
-    socialLinks: jsonb("social_links")
-        .$type<ISocialLinks>()
-        .default({
-            twitter: null,
-            linkedin: null,
-            github: null,
-            website: null,
-        }),
+        avatar: {
+            type: String,
+            default: null,
+        },
 
-    followers: jsonb("followers")
-        .$type<string[]>()
-        .default([]),
+        bio: {
+            type: String,
+            maxlength: 500,
+            default: "",
+        },
 
-    following: jsonb("following")
-        .$type<string[]>()
-        .default([]),
+        socialLinks: {
+            twitter: { type: String, default: null },
+            linkedin: { type: String, default: null },
+            github: { type: String, default: null },
+            website: { type: String, default: null },
+        },
 
+        followers: {
+            type: [String],
+            default: [],
+        },
 
-    preferences: jsonb("preferences")
-        .$type<IUserPreferences>()
-        .default({
-            emailNotifications: true,
-            marketingUpdates: false,
-            twoFactorAuth: false,
-        }),
+        following: {
+            type: [String],
+            default: [],
+        },
 
-    /** ----- TIMESTAMPS ----- */
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+        preferences: {
+            emailNotifications: { type: Boolean, default: true },
+            marketingUpdates: { type: Boolean, default: false },
+            twoFactorAuth: { type: Boolean, default: false },
+        },
+    },
+    {
+        timestamps: true,
+        versionKey: false,
+    }
+);
+
+//
+// ---------------- INDEXES ----------------
+//
+
+// Search & sorting
+UserSchema.index({ fullName: 1 });
+UserSchema.index({ createdAt: -1 });
+
+// Follow system performance
+UserSchema.index({ followers: 1 });
+UserSchema.index({ following: 1 });
+
+// Optional: compound index (search + sort)
+UserSchema.index({ fullName: 1, createdAt: -1 });
+
+// Optional: text search (if you plan advanced search)
+UserSchema.index(
+    { fullName: "text", bio: "text" },
+    { weights: { fullName: 5, bio: 1 } }
+);
+
+const User = mongoose.model<IUser>("User", UserSchema);
+
+export default User;

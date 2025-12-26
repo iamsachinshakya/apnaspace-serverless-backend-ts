@@ -1,90 +1,111 @@
-import { and, asc, desc, eq, ilike, sql } from "drizzle-orm";
-import { getDB } from "../../../../app/db/connectDB";
-import { users } from "../models/user.model";
+import User from "../models/user.model";
 import { IUserRepository } from "./user.repository.interface";
 import { IUserEntity } from "../models/user.entity";
-import { IFollowCount, IFollowUser, IUpdateUser, IUserDashboard } from "../models/user.dto";
+import {
+    IFollowCount,
+    IFollowUser,
+    IUpdateUser,
+    IUserDashboard,
+} from "../models/user.dto";
 import { IQueryParams, PaginatedData } from "../../common/models/common.dto";
 import logger from "../../../../app/utils/logger";
+import mongoose from "mongoose";
 
 export class UserRepository implements IUserRepository {
 
     private normalizeUser(u: any): IUserDashboard {
         return {
-            id: u.id,
+            id: u._id.toString(),
             fullName: u.fullName,
             avatar: u.avatar ?? null,
             bio: u.bio ?? "",
-            socialLinks: u.socialLinks ?? { twitter: null, linkedin: null, github: null, website: null },
-            preferences: u.preferences ?? { emailNotifications: true, marketingUpdates: false, twoFactorAuth: false },
+            socialLinks: u.socialLinks ?? {
+                twitter: null,
+                linkedin: null,
+                github: null,
+                website: null,
+            },
+            preferences: u.preferences ?? {
+                emailNotifications: true,
+                marketingUpdates: false,
+                twoFactorAuth: false,
+            },
             createdAt: u.createdAt,
             updatedAt: u.updatedAt,
         };
     }
 
+    // ---------------- CREATE ----------------
     async create(data: IUserEntity): Promise<IUserDashboard | null> {
         try {
-            const [createdUser] = await getDB().insert(users).values(data).returning();
-            return createdUser ? this.normalizeUser(createdUser) : null;
+            const user = await User.create(data);
+            return this.normalizeUser(user);
         } catch (error) {
             logger.error("Error creating user: %o", error);
             return null;
         }
     }
 
+    // ---------------- FIND ALL (PAGINATED) ----------------
     async findAll(params: IQueryParams): Promise<PaginatedData<IUserDashboard>> {
         try {
-            const { page = 1, limit = 10, search = "", sortBy = "createdAt", sortOrder = "desc" } = params;
-            const offset = (page - 1) * limit;
-            const db = getDB();
+            const {
+                page = 1,
+                limit = 10,
+                search = "",
+                sortBy = "createdAt",
+                sortOrder = "desc",
+            } = params;
 
-            const conditions = [];
-            if (search.trim()) conditions.push(ilike(users.fullName, `%${search}%`));
-            const where = conditions.length ? and(...conditions) : undefined;
+            const skip = (page - 1) * limit;
 
-            const orderByColumn = sortBy === "fullName" ? users.fullName : users.createdAt;
-            const orderBy = sortOrder === "asc" ? asc(orderByColumn) : desc(orderByColumn);
+            const filter: any = {};
+            if (search.trim()) {
+                filter.fullName = { $regex: search, $options: "i" };
+            }
 
-            const rawData = await db
-                .select({
-                    id: users.id,
-                    fullName: users.fullName,
-                    avatar: users.avatar,
-                    bio: users.bio,
-                    socialLinks: users.socialLinks,
-                    preferences: users.preferences,
-                    createdAt: users.createdAt,
-                    updatedAt: users.updatedAt,
-                })
-                .from(users)
-                .where(where)
-                .orderBy(orderBy)
-                .limit(limit)
-                .offset(offset);
+            const sort: any = {
+                [sortBy === "fullName" ? "fullName" : "createdAt"]:
+                    sortOrder === "asc" ? 1 : -1,
+            };
 
-            const data: IUserDashboard[] = rawData.map(this.normalizeUser);
+            const [users, total] = await Promise.all([
+                User.find(filter)
+                    .sort(sort)
+                    .skip(skip)
+                    .limit(limit)
+                    .select("fullName avatar bio socialLinks preferences createdAt updatedAt")
+                    .lean(),
+                User.countDocuments(filter),
+            ]);
 
-            const [{ count }] = await db.select({ count: sql<number>`CAST(COUNT(*) AS INTEGER)` }).from(users).where(where);
-
-            return { data, pagination: { page, limit, total: count, totalPages: Math.ceil(count / limit) } };
+            return {
+                data: users.map(this.normalizeUser),
+                pagination: {
+                    page,
+                    limit,
+                    total,
+                    totalPages: Math.ceil(total / limit),
+                },
+            };
         } catch (error) {
             logger.error("Error fetching users: %o", error);
-            return { data: [], pagination: { page: 1, limit: 10, total: 0, totalPages: 0 } };
+            return {
+                data: [],
+                pagination: { page: 1, limit: 10, total: 0, totalPages: 0 },
+            };
         }
     }
 
+    // ---------------- FIND BY ID ----------------
     async findById(id: string): Promise<IUserDashboard | null> {
         try {
-            const [user] = await getDB().select({
-                id: users.id,
-                fullName: users.fullName,
-                avatar: users.avatar,
-                bio: users.bio,
-                socialLinks: users.socialLinks,
-                preferences: users.preferences,
-                createdAt: users.createdAt,
-                updatedAt: users.updatedAt,
-            }).from(users).where(eq(users.id, id));
+            if (!mongoose.Types.ObjectId.isValid(id)) return null;
+
+            const user = await User.findById(id)
+                .select("fullName avatar bio socialLinks preferences createdAt updatedAt")
+                .lean();
+
             return user ? this.normalizeUser(user) : null;
         } catch (error) {
             logger.error("Error finding user by id %s: %o", id, error);
@@ -92,144 +113,204 @@ export class UserRepository implements IUserRepository {
         }
     }
 
-    async updateAccountById(userId: string, updates: Partial<IUpdateUser>): Promise<Partial<IUpdateUser> | null> {
+    // ---------------- UPDATE ----------------
+    async updateAccountById(
+        userId: string,
+        updates: Partial<IUpdateUser>
+    ): Promise<Partial<IUpdateUser> | null> {
         try {
-            const [updated] = await getDB().update(users).set({ ...updates, updatedAt: new Date() }).where(eq(users.id, userId)).returning();
-            return updated ? updates : null;
+            const result = await User.findByIdAndUpdate(
+                userId,
+                { $set: updates },
+                { new: true }
+            );
+            return result ? updates : null;
         } catch (error) {
             logger.error("Error updating user %s: %o", userId, error);
             return null;
         }
     }
 
+    // ---------------- DELETE ----------------
     async deleteById(userId: string): Promise<boolean> {
         try {
-            const [deleted] = await getDB().delete(users).where(eq(users.id, userId)).returning();
-            return !!deleted;
+            const result = await User.findByIdAndDelete(userId);
+            return !!result;
         } catch (error) {
             logger.error("Error deleting user %s: %o", userId, error);
             return false;
         }
     }
 
+    // ---------------- FOLLOW LOGIC ----------------
     async addFollower(targetUserId: string, followerId: string): Promise<boolean> {
         try {
-            const result = await getDB()
-                .update(users)
-                .set({ followers: sql`${users.followers} || ${followerId}`, updatedAt: new Date() })
-                .where(eq(users.id, targetUserId))
-                .returning({ id: users.id });
-            return result.length > 0;
+            const result = await User.findByIdAndUpdate(
+                targetUserId,
+                { $addToSet: { followers: followerId } },
+                { new: true }
+            );
+            return !!result;
         } catch (error) {
-            logger.error("Error adding follower %s to user %s: %o", followerId, targetUserId, error);
+            logger.error(
+                "Error adding follower %s to user %s: %o",
+                followerId,
+                targetUserId,
+                error
+            );
             return false;
         }
     }
 
     async addFollowing(userId: string, targetUserId: string): Promise<boolean> {
         try {
-            const result = await getDB()
-                .update(users)
-                .set({ following: sql`${users.following} || ${targetUserId}`, updatedAt: new Date() })
-                .where(eq(users.id, userId))
-                .returning({ id: users.id });
-            return result.length > 0;
+            const result = await User.findByIdAndUpdate(
+                userId,
+                { $addToSet: { following: targetUserId } },
+                { new: true }
+            );
+            return !!result;
         } catch (error) {
-            logger.error("Error adding following %s for user %s: %o", targetUserId, userId, error);
+            logger.error(
+                "Error adding following %s for user %s: %o",
+                targetUserId,
+                userId,
+                error
+            );
             return false;
         }
     }
 
     async removeFollower(targetUserId: string, followerId: string): Promise<boolean> {
         try {
-            const result = await getDB()
-                .update(users)
-                .set({ followers: sql`array_remove(${users.followers}, ${followerId})`, updatedAt: new Date() })
-                .where(eq(users.id, targetUserId))
-                .returning({ id: users.id });
-            return result.length > 0;
+            const result = await User.findByIdAndUpdate(
+                targetUserId,
+                { $pull: { followers: followerId } },
+                { new: true }
+            );
+            return !!result;
         } catch (error) {
-            logger.error("Error removing follower %s from user %s: %o", followerId, targetUserId, error);
+            logger.error(
+                "Error removing follower %s from user %s: %o",
+                followerId,
+                targetUserId,
+                error
+            );
             return false;
         }
     }
 
     async removeFollowing(userId: string, targetUserId: string): Promise<boolean> {
         try {
-            const result = await getDB()
-                .update(users)
-                .set({ following: sql`array_remove(${users.following}, ${targetUserId})`, updatedAt: new Date() })
-                .where(eq(users.id, userId))
-                .returning({ id: users.id });
-            return result.length > 0;
+            const result = await User.findByIdAndUpdate(
+                userId,
+                { $pull: { following: targetUserId } },
+                { new: true }
+            );
+            return !!result;
         } catch (error) {
-            logger.error("Error removing following %s for user %s: %o", targetUserId, userId, error);
+            logger.error(
+                "Error removing following %s for user %s: %o",
+                targetUserId,
+                userId,
+                error
+            );
             return false;
         }
     }
 
+    // ---------------- FOLLOWERS / FOLLOWING ----------------
     async findFollowers(userId: string): Promise<IFollowUser[]> {
         try {
-            const db = getDB();
-            const [row] = await db.select({ followers: users.followers }).from(users).where(eq(users.id, userId));
-            const followers = row?.followers ?? [];
-            if (followers.length === 0) return [];
-            return db.select({ id: users.id, fullName: users.fullName, avatar: users.avatar }).from(users).where(sql`${users.id} = ANY(${followers})`);
+            const user = await User.findById(userId)
+                .select("followers")
+                .lean();
+
+            if (!user || user.followers.length === 0) return [];
+
+            const followers = await User.find({
+                _id: { $in: user.followers },
+            })
+                .select("fullName avatar")
+                .lean();
+
+            return followers.map((u: any) => ({
+                id: u._id.toString(),
+                fullName: u.fullName,
+                avatar: u.avatar ?? null,
+            }));
         } catch (error) {
             logger.error("Error fetching followers for user %s: %o", userId, error);
             return [];
         }
     }
 
+
     async findFollowing(userId: string): Promise<IFollowUser[]> {
         try {
-            const db = getDB();
-            const [row] = await db.select({ following: users.following }).from(users).where(eq(users.id, userId));
-            const following = row?.following ?? [];
-            if (following.length === 0) return [];
-            return db.select({ id: users.id, fullName: users.fullName, avatar: users.avatar }).from(users).where(sql`${users.id} = ANY(${following})`);
+            const user = await User.findById(userId)
+                .select("following")
+                .lean();
+
+            if (!user || user.following.length === 0) return [];
+
+            const followingUsers = await User.find({
+                _id: { $in: user.following },
+            })
+                .select("fullName avatar")
+                .lean();
+
+            return followingUsers.map((u: any) => ({
+                id: u._id.toString(),
+                fullName: u.fullName,
+                avatar: u.avatar ?? null,
+            }));
         } catch (error) {
             logger.error("Error fetching following for user %s: %o", userId, error);
             return [];
         }
     }
 
-    /**
- * Check if a user is following a target user
- * @param userId - ID of the follower
- * @param targetUserId - ID of the target user
- * @returns true if userId is already following targetUserId
- */
+
+    // ---------------- IS FOLLOWING ----------------
     async isFollowing(userId: string, targetUserId: string): Promise<boolean> {
         try {
-            const db = getDB();
-            const [row] = await db
-                .select({ followers: users.followers })
-                .from(users)
-                .where(eq(users.id, targetUserId));
+            const user = await User.findOne({
+                _id: targetUserId,
+                followers: userId,
+            }).lean();
 
-            if (!row || !row.followers) return false;
-            return row.followers.includes(userId);
+            return !!user;
         } catch (error) {
-            logger.error("Error checking if user %s is following %s: %o", userId, targetUserId, error);
+            logger.error(
+                "Error checking if user %s is following %s: %o",
+                userId,
+                targetUserId,
+                error
+            );
             return false;
         }
     }
 
-
+    // ---------------- FOLLOW COUNTS ----------------
     async getFollowCounts(userId: string): Promise<IFollowCount | null> {
         try {
-            const [result] = await getDB()
-                .select({
-                    followerCount: sql<number>`jsonb_array_length(${users.followers})`,
-                    followingCount: sql<number>`jsonb_array_length(${users.following})`,
-                })
-                .from(users)
-                .where(eq(users.id, userId));
-            if (!result) return null;
-            return { followerCount: Number(result.followerCount ?? 0), followingCount: Number(result.followingCount ?? 0) };
+            const user = await User.findById(userId)
+                .select("followers following")
+                .lean();
+
+            if (!user) return null;
+
+            return {
+                followerCount: user.followers?.length ?? 0,
+                followingCount: user.following?.length ?? 0,
+            };
         } catch (error) {
-            logger.error("Error fetching follow counts for user %s: %o", userId, error);
+            logger.error(
+                "Error fetching follow counts for user %s: %o",
+                userId,
+                error
+            );
             return null;
         }
     }
